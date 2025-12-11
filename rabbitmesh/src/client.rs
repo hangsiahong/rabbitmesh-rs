@@ -38,7 +38,7 @@ impl ServiceClient {
 
         // Set up response queue for this client
         let response_queue = format!("rabbitmesh.{}.responses", client_name);
-        connection.declare_queue(&response_queue).await?;
+        connection.declare_queue(&response_queue, lapin::types::FieldTable::default()).await?;
         
         // Start response processor
         let client = Self {

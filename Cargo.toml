@@ -78,6 +78,9 @@ config = "0.14"
 # Testing - Updated
 tokio-test = "0.4"
 
+# Caching - Redis
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+
 # Additional dependencies we might need for newer versions
 http = "1.1"
 http-body-util = "0.1"

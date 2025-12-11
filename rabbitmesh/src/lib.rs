@@ -229,3 +229,6 @@ pub use service::{MicroService, ServiceConfig, ServiceClient as ServiceClientFro
 pub use service::MicroService as Service;
 pub use client::ServiceClient;
 pub use error::{RabbitMeshError, Result};
+
+// Re-export redis for macros
+pub use redis;

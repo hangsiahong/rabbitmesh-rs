@@ -310,7 +310,10 @@ async fn discover_services_from_rabbitmq() -> Vec<String> {
     let client = reqwest::Client::new();
     match client
         .get("http://localhost:15672/api/queues")
-        .basic_auth("guest", Some("guest"))
+        .basic_auth(
+            std::env::var("RABBITMQ_API_USER").unwrap_or_else(|_| "guest".to_string()), 
+            Some(std::env::var("RABBITMQ_API_PASSWORD").unwrap_or_else(|_| "guest".to_string()))
+        )
         .send()
         .await
     {
