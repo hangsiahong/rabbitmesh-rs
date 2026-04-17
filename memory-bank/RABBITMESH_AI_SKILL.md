@@ -111,3 +111,27 @@ When implementing endpoints, the `msg: Message` parameter provides several built
 1. The compiler warns about `self`: You forgot that endpoints are expanded generically statically. Map DB controllers to `HANDLER: OnceLock<T>`.
 2. Gateway can't find your endpoint: Verify you've properly invoked `MyService::register_handlers()`.
 3. RabbitMQ blocks/hangs forever: Make sure your logic does not block the executor for over 30s. Background heavy tasks to alternative channels asynchronously.
+
+## 4. Full-Stack Frontend Integration (React/Vite/NextJS)
+When integrating a frontend SPA (Single Page Application) with the RabbitMesh backend Gateway, always be aware of the following architectural rules:
+
+### A. The CORS Requirement
+The standard `create_auto_router` in `rabbitmesh_gateway` does NOT have CORS enabled. Web applications will throw a `Network Error` from Axios Preflight failures. 
+You must explicitly inject a `tower_http::cors::CorsLayer` before serving the Axum gateway:
+```rust
+use tower_http::cors::CorsLayer;
+// Create the auto-router...
+let app = auto_router.layer(CorsLayer::permissive()); 
+axum::serve(listener, app).await?;
+```
+
+### B. The Gateway Routing Path (Crucial Trap)
+Because RabbitMesh statically maps REST paths directly into RabbitMQ RPC queues, the Gateway expects a very strict format to proxy the call. 
+**Format:** `http://<gateway_url>/api/v1/{service_name}/{rust_macro_function_name}`
+
+**The Generator Bug:** If you use the `@rabbitmesh/client-generator` node package, it currently has a bug where it generates paths using the raw declarative `path` string (e.g. `/api/v1/orchestrator-service/api/v1/jobs`), which will return a **404**. 
+You must either:
+1. Manually update the Frontend's Axios calls to hit the explicit function name (e.g. `axios.post('/api/v1/orchestrator-service/submit_job')`).
+2. Correct the `client-generator` script dynamically. 
+
+By following these rules, the mesh tunnel will cleanly forward HTTP headers -> Axum Gateway -> RabbitMQ Binary Payloads -> Rust Worker Nodes.
