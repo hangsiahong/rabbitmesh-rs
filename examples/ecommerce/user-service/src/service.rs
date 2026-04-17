@@ -11,16 +11,16 @@ use crate::{
     model::{CreateUserRequest, UpdateUserRequest, UserResponse},
 };
 
-pub struct UserService {
-    handler: Arc<UserHandler>,
-}
+static HANDLER: std::sync::OnceLock<Arc<UserHandler>> = std::sync::OnceLock::new();
+
+pub struct UserService {}
 
 #[service_impl]
 impl UserService {
     pub fn new(handler: UserHandler) -> Self {
-        Self {
-            handler: Arc::new(handler),
-        }
+        let arc_handler = Arc::new(handler);
+        let _ = HANDLER.set(arc_handler);
+        Self {}
     }
 
 
@@ -33,24 +33,15 @@ impl UserService {
         let request: CreateUserRequest = msg.deserialize_payload()
             .map_err(|e| format!("Invalid request format: {}", e))?;
 
-        // TODO: Get handler from service registry or global state
-        // For now, implement the business logic directly
-        let user_id = uuid::Uuid::new_v4().to_string();
-        let role = request.role.unwrap_or_else(|| "customer".to_string());
-        let permissions = crate::utils::get_default_permissions(&role);
+        let handler = HANDLER.get().expect("Handler not initialized");
         
-        let user = UserResponse {
-            id: user_id,
-            email: request.email,
-            name: request.name,
-            role,
-            permissions,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        tracing::info!("Created user: {}", user.id);
-        Ok(serde_json::to_value(user).unwrap())
+        match handler.create_user(request).await {
+            Ok(user) => {
+                tracing::info!("Created user: {}", user.id);
+                Ok(serde_json::to_value(user).unwrap())
+            },
+            Err(e) => Err(format!("Failed to create user: {}", e))
+        }
     }
 
     #[service_method("GET /users/:id")]
@@ -65,20 +56,13 @@ impl UserService {
             .ok_or("User ID not found in request")?;
         
         tracing::info!("Getting user: {}", user_id);
+        let handler = HANDLER.get().expect("Handler not initialized");
         
-        // TODO: Query from real database
-        // For now, return a constructed response based on the ID
-        let user = UserResponse {
-            id: user_id.clone(),
-            email: format!("user-{}@example.com", user_id),
-            name: format!("User {}", user_id),
-            role: "customer".to_string(),
-            permissions: crate::utils::get_default_permissions("customer"),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        Ok(serde_json::to_value(user).unwrap())
+        match handler.get_user(user_id).await {
+            Ok(Some(user)) => Ok(serde_json::to_value(user).unwrap()),
+            Ok(None) => Err("User not found".to_string()),
+            Err(e) => Err(format!("Failed to get user: {}", e))
+        }
     }
 
     #[service_method("PUT /users/:id")]
@@ -90,21 +74,19 @@ impl UserService {
     #[metrics]
     #[audit_log]
     pub async fn update_user(msg: Message) -> Result<Value, String> {
-        let request: UpdateUserRequest = serde_json::from_value(msg.payload)
+        let request: UpdateUserRequest = msg.deserialize_payload()
             .map_err(|e| format!("Invalid request format: {}", e))?;
+            
+        let user_id = msg.metadata.get("id")
+            .ok_or("User ID not found in path")?;
 
-        // For demo purposes, return updated user
-        let user = UserResponse {
-            id: "demo-user-123".to_string(),
-            email: "demo@example.com".to_string(),
-            name: request.name.unwrap_or_else(|| "Updated Demo User".to_string()),
-            role: request.role.unwrap_or_else(|| "customer".to_string()),
-            permissions: request.permissions.unwrap_or_else(|| vec!["orders:read".to_string(), "orders:write".to_string()]),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        Ok(serde_json::to_value(user).unwrap())
+        let handler = HANDLER.get().expect("Handler not initialized");
+        
+        match handler.update_user(user_id, request).await {
+            Ok(Some(user)) => Ok(serde_json::to_value(user).unwrap()),
+            Ok(None) => Err("User not found".to_string()),
+            Err(e) => Err(format!("Failed to update user: {}", e))
+        }
     }
 
     #[service_method("DELETE /users/:id")]
@@ -115,11 +97,21 @@ impl UserService {
     #[metrics]
     #[audit_log]
     pub async fn delete_user(msg: Message) -> Result<Value, String> {
-        // For demo purposes, always return success
-        Ok(serde_json::json!({
-            "message": "User deleted successfully",
-            "deleted_at": chrono::Utc::now().to_rfc3339()
-        }))
+        let user_id = msg.metadata.get("id")
+            .ok_or("User ID not found in path")?;
+
+        let handler = HANDLER.get().expect("Handler not initialized");
+        
+        match handler.delete_user(user_id).await {
+            Ok(true) => {
+                Ok(serde_json::json!({
+                    "message": "User deleted successfully",
+                    "deleted_at": chrono::Utc::now().to_rfc3339()
+                }))
+            },
+            Ok(false) => Err("User not found".to_string()),
+            Err(e) => Err(format!("Failed to delete user: {}", e))
+        }
     }
 
     #[service_method("GET /users")]
@@ -138,31 +130,12 @@ impl UserService {
             .unwrap_or(0);
 
         tracing::info!("Listing users with limit: {}, skip: {}", limit, skip);
+        let handler = HANDLER.get().expect("Handler not initialized");
 
-        // TODO: Query from real database
-        // For now, return sample users
-        let users = vec![
-            UserResponse {
-                id: "1".to_string(),
-                email: "admin@example.com".to_string(),
-                name: "Admin User".to_string(),
-                role: "admin".to_string(),
-                permissions: crate::utils::get_default_permissions("admin"),
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-            UserResponse {
-                id: "2".to_string(),
-                email: "customer@example.com".to_string(),
-                name: "Customer User".to_string(),
-                role: "customer".to_string(),
-                permissions: crate::utils::get_default_permissions("customer"),
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            }
-        ];
-
-        Ok(serde_json::to_value(users).unwrap())
+        match handler.list_users(limit, skip).await {
+            Ok(users) => Ok(serde_json::to_value(users).unwrap()),
+            Err(e) => Err(format!("Failed to list users: {}", e))
+        }
     }
 
     #[service_method("GET /users/email/:email")]
@@ -175,19 +148,12 @@ impl UserService {
             .ok_or("Email not provided in request")?;
 
         tracing::info!("Getting user by email: {}", email);
+        let handler = HANDLER.get().expect("Handler not initialized");
 
-        // TODO: Query from real database
-        // For now, return constructed response
-        let user = crate::model::User {
-            id: uuid::Uuid::new_v4().to_string(),
-            email: email.clone(),
-            name: "User from Email".to_string(),
-            role: "customer".to_string(),
-            permissions: crate::utils::get_default_permissions("customer"),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        Ok(serde_json::to_value(user).unwrap())
+        match handler.get_user_by_email(email).await {
+            Ok(Some(user)) => Ok(serde_json::to_value(user).unwrap()),
+            Ok(None) => Err("User not found".to_string()),
+            Err(e) => Err(format!("Failed to get user by email: {}", e))
+        }
     }
 }

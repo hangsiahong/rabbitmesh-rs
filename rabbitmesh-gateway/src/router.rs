@@ -33,7 +33,7 @@ pub struct GatewayState {
 /// 5. Gateway returns HTTP response to frontend
 /// 
 /// Example flow:
-/// ```
+/// ```text
 /// Frontend -> GET /api/v1/user-service/users/123
 ///          -> Gateway extracts: service="user-service", method="get_user", params={id: 123}
 ///          -> Gateway calls service via RabbitMQ
@@ -308,9 +308,14 @@ async fn discover_services_from_rabbitmq() -> Vec<String> {
     
     // Query RabbitMQ management API for queues
     let client = reqwest::Client::new();
+    let rmq_management = std::env::var("RABBITMQ_MANAGEMENT_URL").unwrap_or_else(|_| "http://localhost:15672".to_string());
+    
     match client
-        .get("http://localhost:15672/api/queues")
-        .basic_auth("guest", Some("guest"))
+        .get(&format!("{}/api/queues", rmq_management))
+        .basic_auth(
+            std::env::var("RABBITMQ_API_USER").unwrap_or_else(|_| "guest".to_string()), 
+            Some(std::env::var("RABBITMQ_API_PASSWORD").unwrap_or_else(|_| "guest".to_string()))
+        )
         .send()
         .await
     {
@@ -441,30 +446,6 @@ async fn discover_service_methods(state: &GatewayState, service_name: &str) -> V
     ]
 }
 
-/// Convert service route format to gateway route format
-/// e.g., "POST /users/:id" -> ("POST", "/api/v1/user-service/users/{id}")
-fn convert_route_to_gateway_format(service_name: &str, route: &str) -> serde_json::Value {
-    let parts: Vec<&str> = route.splitn(2, ' ').collect();
-    if parts.len() == 2 {
-        let method = parts[0];
-        let path = parts[1]
-            .replace(":id", "{id}")
-            .replace(":user_id", "{user_id}")
-            .replace(":order_id", "{order_id}")
-            .replace(":status", "{status}")
-            .replace(":email", "{email}");
-        
-        serde_json::json!({
-            "http_method": method,
-            "gateway_path": format!("/api/v1/{}{}", service_name, path)
-        })
-    } else {
-        serde_json::json!({
-            "http_method": "GET",
-            "gateway_path": format!("/api/v1/{}/unknown", service_name)
-        })
-    }
-}
 
 /// Describe a specific service and its methods
 async fn describe_service(

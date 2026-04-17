@@ -41,6 +41,9 @@ anyhow = "1.0"
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Redis for distributed state
+redis = { workspace = true }
+
 # Proc macros
 rabbitmesh-macros = "0.1.0"
 

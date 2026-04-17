@@ -124,13 +124,30 @@ impl MicroService {
         self.connection.connect().await?;
         info!("✅ Connected to RabbitMQ");
 
-        // Set up queues
+        // Setup Dead Letter Exchange (DLX) infrastructure for resilience
+        let dlx_name = "rabbitmesh.dlx";
+        let dlq_name = "rabbitmesh.dlq";
+        
+        // Declare Fanout DLX
+        self.connection.declare_exchange(dlx_name, lapin::ExchangeKind::Fanout).await?;
+        
+        // Declare DLQ
+        self.connection.declare_queue(dlq_name, lapin::types::FieldTable::default()).await?;
+        
+        // Bind DLQ to DLX
+        self.connection.bind_queue(dlq_name, dlx_name, "").await?;
+        info!("✅ Configured Resilience: DLX ({}) -> DLQ ({})", dlx_name, dlq_name);
+
+        // Set up service queues with DLX arguments
         let request_queue = format!("rabbitmesh.{}", self.config.service_name);
         let response_queue = format!("rabbitmesh.{}.responses", self.config.service_name);
         
-        self.connection.declare_queue(&request_queue).await?;
-        self.connection.declare_queue(&response_queue).await?;
-        info!("✅ Declared queues: {}, {}", request_queue, response_queue);
+        let mut queue_args = lapin::types::FieldTable::default();
+        queue_args.insert("x-dead-letter-exchange".into(), lapin::types::AMQPValue::LongString(dlx_name.into()));
+        
+        self.connection.declare_queue(&request_queue, queue_args.clone()).await?;
+        self.connection.declare_queue(&response_queue, queue_args).await?;
+        info!("✅ Declared service queues: {}, {}", request_queue, response_queue);
 
         // Start message processors concurrently
         let request_processor = self.start_request_processor().await?;
@@ -142,12 +159,18 @@ impl MicroService {
         info!("📊 Max concurrent messages: {}", self.config.max_concurrent_messages);
 
         // Wait for all tasks to complete (they run indefinitely)
-        tokio::try_join!(
+        let (res_req, res_resp, res_clean, res_health) = tokio::try_join!(
             request_processor,
             response_processor, 
             cleanup_task,
             health_check_task,
         )?;
+        
+        // Propagate any internal errors
+        res_req?;
+        res_resp?;
+        res_clean?;
+        res_health?;
 
         Ok(())
     }
@@ -160,7 +183,7 @@ impl MicroService {
         let consumer = self.connection.create_consumer(&queue_name, &consumer_tag).await?;
         let rpc = self.rpc.clone();
         let service_name = self.config.service_name.clone();
-        let max_concurrent = self.config.max_concurrent_messages;
+        let _max_concurrent = self.config.max_concurrent_messages;
 
         let handle = tokio::spawn(async move {
             info!("📥 Request processor started for {}", service_name);
@@ -173,7 +196,8 @@ impl MicroService {
                         let rpc_clone = rpc.clone();
                         tokio::spawn(async move {
                             if let Err(e) = Self::process_request_message(delivery, rpc_clone).await {
-                                error!("Error processing request: {}", e);
+                                // This log is for framework-level erors (e.g. Ack failure)
+                                error!("Critical error in request processor: {}", e);
                             }
                         });
                     }
@@ -229,29 +253,52 @@ impl MicroService {
         Ok(handle)
     }
 
-    /// Process a single request message
+    /// Process a single request message with Resilience patterns
     async fn process_request_message(
         delivery: Delivery,
         rpc: Arc<RpcFramework>,
     ) -> Result<()> {
-        let message = Message::from_bytes(&delivery.data)?;
+        // 1. Try to deserialize the message
+        let message = match Message::from_bytes(&delivery.data) {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("❌ FATAL: Received invalid message format (Poison Message): {}", e);
+                // Nack with requeue=false to send to DLX (Dead Letter Exchange)
+                // This prevents the poison message from being reprocessed infinitely
+                delivery.nack(lapin::options::BasicNackOptions {
+                    multiple: false,
+                    requeue: false, 
+                }).await?;
+                return Ok(());
+            }
+        };
         
         debug!("📨 Processing request: {} from {}", message.method, message.from);
         
-        // Handle the request (this spawns async task, never blocks)
+        // 2. Handle the request
         let result = rpc.handle_request(message).await;
         
-        // Acknowledge message
+        // 3. Acknowledge or Retry logic
         match result {
             Ok(_) => {
+                // Success (or handled business error), acknowledge
                 delivery.ack(lapin::options::BasicAckOptions::default()).await?;
                 debug!("✅ Request processed and acknowledged");
             }
             Err(e) => {
-                error!("❌ Request processing failed: {}", e);
+                // Framework/Network error occurred
+                error!("❌ TRANSIENT: Request processing failed: {}", e);
+                
+                // For transient errors, we Requeue (requeue=true)
+                // In a production system, we should have a backoff delay or retry count check here
+                // For now, simple requeue allows eventual consistency
+                
+                // Optional: Add a small delay to prevent tight loop if broker is down
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
                 delivery.nack(lapin::options::BasicNackOptions {
                     multiple: false,
-                    requeue: true, // Requeue for retry
+                    requeue: true, // Retry
                 }).await?;
             }
         }

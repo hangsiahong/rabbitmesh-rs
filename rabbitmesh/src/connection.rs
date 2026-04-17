@@ -166,8 +166,8 @@ impl ConnectionManager {
             .ok_or_else(|| RabbitMeshError::internal_error("Connection should exist after connect"))
     }
 
-    /// Declare a queue with standard configuration
-    pub async fn declare_queue(&self, queue_name: &str) -> Result<Queue> {
+    /// Declare a queue with optional arguments (e.g. for DLX)
+    pub async fn declare_queue(&self, queue_name: &str, args: FieldTable) -> Result<Queue> {
         let channel = self.get_channel().await?;
         
         let queue = channel
@@ -179,13 +179,49 @@ impl ConnectionManager {
                     auto_delete: false,
                     ..Default::default()
                 },
-                FieldTable::default(),
+                args,
             )
             .await?;
         
         self.return_channel(channel).await;
         debug!("Declared queue: {}", queue_name);
         Ok(queue)
+    }
+
+    /// Declare a dead letter exchange (DLX)
+    pub async fn declare_exchange(&self, name: &str, kind: lapin::ExchangeKind) -> Result<()> {
+        let channel = self.get_channel().await?;
+        
+        channel.exchange_declare(
+            name,
+            kind,
+            ExchangeDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
+            FieldTable::default(),
+        ).await?;
+        
+        self.return_channel(channel).await;
+        info!("Declared Exchange: {}", name);
+        Ok(())
+    }
+
+    /// Bind a queue to an exchange
+    pub async fn bind_queue(&self, queue: &str, exchange: &str, routing_key: &str) -> Result<()> {
+        let channel = self.get_channel().await?;
+        
+        channel.queue_bind(
+            queue,
+            exchange,
+            routing_key,
+            QueueBindOptions::default(),
+            FieldTable::default(),
+        ).await?;
+        
+        self.return_channel(channel).await;
+        info!("Bound queue {} to exchange {} with key {}", queue, exchange, routing_key);
+        Ok(())
     }
 
     /// Create a consumer for the specified queue
