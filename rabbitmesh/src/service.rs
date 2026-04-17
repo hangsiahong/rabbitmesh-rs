@@ -159,12 +159,18 @@ impl MicroService {
         info!("📊 Max concurrent messages: {}", self.config.max_concurrent_messages);
 
         // Wait for all tasks to complete (they run indefinitely)
-        tokio::try_join!(
+        let (res_req, res_resp, res_clean, res_health) = tokio::try_join!(
             request_processor,
             response_processor, 
             cleanup_task,
             health_check_task,
         )?;
+        
+        // Propagate any internal errors
+        res_req?;
+        res_resp?;
+        res_clean?;
+        res_health?;
 
         Ok(())
     }
@@ -177,7 +183,7 @@ impl MicroService {
         let consumer = self.connection.create_consumer(&queue_name, &consumer_tag).await?;
         let rpc = self.rpc.clone();
         let service_name = self.config.service_name.clone();
-        let max_concurrent = self.config.max_concurrent_messages;
+        let _max_concurrent = self.config.max_concurrent_messages;
 
         let handle = tokio::spawn(async move {
             info!("📥 Request processor started for {}", service_name);

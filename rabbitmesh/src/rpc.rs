@@ -212,11 +212,16 @@ impl RpcFramework {
 
         let response = match handler {
             Some(handler) => {
-                match handler.handle(message.clone()).await {
-                    Ok(response) => response,
-                    Err(e) => {
+                // Apply strict execution timeout binding (30s max)
+                match tokio::time::timeout(std::time::Duration::from_secs(30), handler.handle(message.clone())).await {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(e)) => {
                         error!("Handler error for {}: {}", method, e);
                         RpcResponse::error(format!("Handler error: {}", e))
+                    }
+                    Err(_) => {
+                        error!("FATAL: Handler timed out exceeding 30s. Dropping processing. Method: {}", method);
+                        RpcResponse::error(format!("Execution timeout (30s boundary exceeded)"))
                     }
                 }
             }

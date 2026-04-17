@@ -6,7 +6,6 @@
 // Re-export proc macro modules  
 mod service_definition;
 mod service_method;
-mod dynamic_discovery;
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -376,26 +375,6 @@ pub fn service_impl(_args: TokenStream, input: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-/// Generate dynamic auto-gateway from workspace service discovery
-/// 
-/// This macro scans the entire workspace for services with #[service_impl] and #[service_method]
-/// annotations and generates a gateway that works with ANY project type.
-/// 
-/// NO HARDCODING - purely dynamic discovery!
-/// 
-/// Usage: generate_auto_gateway!();
-#[proc_macro]
-pub fn generate_auto_gateway(_input: TokenStream) -> TokenStream {
-    use dynamic_discovery::ServiceDiscovery;
-    
-    // Discover all services dynamically from the workspace
-    let discovered_services = ServiceDiscovery::discover_workspace_services();
-    
-    // Generate gateway code based on discovered services
-    let gateway_code = ServiceDiscovery::generate_dynamic_gateway(discovered_services);
-    
-    gateway_code.into()
-}
 
 /// Generate universal wrapper code for a service method
 fn generate_universal_wrapper(_service_name: &str, _method_name: &str, macro_attrs: &[String]) -> proc_macro2::TokenStream {
